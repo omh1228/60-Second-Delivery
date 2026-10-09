@@ -48,7 +48,8 @@ public class DeliveryGame : MonoBehaviour
     // UI
     Text scoreText, timeText, infoText, hintText, resultText, starText;
     Image deliverImg;
-    GameObject resultPanel;
+    GameObject resultPanel, startPanel;
+    Text startBestText;
     VirtualStick stick;
 
     static readonly Color Blue = Hex("#3A7BD5");
@@ -87,11 +88,28 @@ public class DeliveryGame : MonoBehaviour
         var unlit = Shader.Find("Universal Render Pipeline/2D/Sprite-Unlit-Default");
         if (unlit != null) spriteMat = new Material(unlit);
 
-        font = Font.CreateDynamicFontFromOSFont(new[] { "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Arial" }, 32);
+        // 웹(WebGL) 빌드에서는 OS 글꼴을 쓸 수 없으므로 Resources/GameFont.ttf(한글 포함)를 먼저 사용
+        font = Resources.Load<Font>("GameFont");
+        if (font == null) font = Font.CreateDynamicFontFromOSFont(new[] { "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Arial" }, 32);
+        if (spriteMat == null) EnsureGlobalLight();
 
         BuildWorld();
         BuildUI();
-        Restart();
+        ShowStart();
+    }
+
+    // URP 2D에서 Unlit 셰이더가 빌드에 빠졌을 때 스프라이트가 어둡게 보이지 않도록 전역 2D 조명을 하나 만든다.
+    // (Built-in 파이프라인이면 Light2D 타입이 없으므로 아무것도 하지 않음)
+    void EnsureGlobalLight()
+    {
+        var lightType = System.Type.GetType("UnityEngine.Rendering.Universal.Light2D, Unity.RenderPipelines.Universal.Runtime");
+        if (lightType == null) return;
+        if (Object.FindAnyObjectByType(lightType) != null) return;
+        var go = new GameObject("Global Light 2D");
+        var light = go.AddComponent(lightType);
+        var prop = lightType.GetProperty("lightType");
+        if (prop != null && prop.CanWrite)
+            prop.SetValue(light, System.Enum.Parse(prop.PropertyType, "Global"));
     }
 
     // ================= 월드 =================
@@ -151,6 +169,20 @@ public class DeliveryGame : MonoBehaviour
     float LimitFor(int s) { return s <= 1 ? 7f : (s == 2 ? 5f : 4f); }
 
     // ================= 진행 =================
+    void ShowStart()
+    {
+        playing = false;
+        resultPanel.SetActive(false);
+        startBestText.text = "최고 기록  " + PlayerPrefs.GetInt("BestScore", 0);
+        startPanel.SetActive(true);
+    }
+
+    public void StartGame()
+    {
+        startPanel.SetActive(false);
+        Restart();
+    }
+
     void Restart()
     {
         foreach (var c in cars) Destroy(c.t.gameObject);
@@ -203,7 +235,7 @@ public class DeliveryGame : MonoBehaviour
     {
         if (!playing)
         {
-            if (RestartKey()) Restart();
+            if (RestartKey()) StartGame();
             return;
         }
 
@@ -388,6 +420,18 @@ public class DeliveryGame : MonoBehaviour
         again.gameObject.AddComponent<Button>().onClick.AddListener(Restart);
         MakeText(again.transform, "다시 하기", 28, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, Vector2.zero);
         resultPanel.SetActive(false);
+
+        // 시작 화면
+        var sdim = MakeImage("StartPanel", root, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, new Color(0, 0, 0, 0.75f));
+        startPanel = sdim.gameObject;
+        var st = MakeText(sdim.transform, "택배기사", 56, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 230));
+        st.color = Yellow;
+        MakeText(sdim.transform, "60초 배송", 40, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 165));
+        MakeText(sdim.transform, "1. 깜빡이는 배송지를 탭\n2. 왼쪽 스틱으로 이동, 자동차 조심\n3. 도착하면 배송 버튼", 22, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 40));
+        startBestText = MakeText(sdim.transform, "", 26, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, -70));
+        var startBtn = MakeImage("StartButton", sdim.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0, -170), new Vector2(240, 80), Yellow);
+        startBtn.gameObject.AddComponent<Button>().onClick.AddListener(StartGame);
+        MakeText(startBtn.transform, "START", 34, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, Vector2.zero).color = Color.black;
     }
 
     Image MakeImage(string name, Transform parent, Vector2 aMin, Vector2 aMax, Vector2 pivot, Vector2 pos, Vector2 size, Color c)
