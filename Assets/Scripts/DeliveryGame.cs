@@ -27,9 +27,15 @@ public class DeliveryGame : MonoBehaviour
     const float PlayerSpeed = 3.6f;
     const float DeliverRange = 1.4f; // 배송 버튼이 활성화되는 거리
     static readonly int[] StarDeliveries = { 10, 20, 30 }; // 별 1, 2, 3개에 필요한 배송 건수
+#if UNITY_WEBGL && !UNITY_EDITOR
+    // Assets/Plugins/WebGL/NameInput.jslib 의 함수 (PC 브라우저에서 한글 입력용)
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    static extern void OpenNamePrompt(string current, int maxLen);
+#endif
+
     // ===== 랭킹 (Firebase Realtime Database) =====
     // Firebase 콘솔에서 만든 데이터베이스 주소로 바꾸세요. 끝에 / 는 붙이지 않습니다.
-    const string FirebaseUrl = "https://second-delivery-13526-default-rtdb.asia-southeast1.firebasedatabase.app";
+    const string FirebaseUrl = "https://second-delivery-13526-default-rtdb.asia-southeast1.firebasedatabase.app/";
     const int RankShow = 5;          // 결과 화면에 보여 줄 순위 수
     const float RankRefresh = 5f;    // 결과 화면에서 랭킹을 다시 불러오는 간격(초)
     const int NameMax = 10;          // 이름 최대 글자 수
@@ -226,6 +232,13 @@ public class DeliveryGame : MonoBehaviour
         PlayerPrefs.Save();
         startPanel.SetActive(false);
         Restart();
+    }
+
+    // 브라우저 입력창(NameInput.jslib)에서 입력한 이름을 받는다
+    public void OnNameEntered(string value)
+    {
+        string n = CleanName(value);
+        nameInput.text = (n == "익명" && string.IsNullOrWhiteSpace(value)) ? "" : n;
     }
 
     // 이름 정리: 앞뒤 공백 제거, 따옴표·역슬래시·꺾쇠·제어 문자 제거, 최대 NameMax 글자, 비어 있으면 "익명"
@@ -712,6 +725,20 @@ public class DeliveryGame : MonoBehaviour
         input.placeholder = ph;
         input.characterLimit = NameMax;
         input.lineType = InputField.LineType.SingleLine;
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // PC 브라우저: Unity 입력 칸은 한글이 안 쳐지므로, 누르면 브라우저 입력창을 띄운다
+        // (폰은 Unity가 자체 입력창을 띄워 주므로 그대로 둔다)
+        if (!Application.isMobilePlatform)
+        {
+            input.interactable = false;
+            input.transition = Selectable.Transition.None;
+            var trigger = bg.gameObject.AddComponent<EventTrigger>();
+            var entry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
+            entry.callback.AddListener(_ => OpenNamePrompt(nameInput != null ? nameInput.text : "", NameMax));
+            trigger.triggers.Add(entry);
+        }
+#endif
         return input;
     }
 
