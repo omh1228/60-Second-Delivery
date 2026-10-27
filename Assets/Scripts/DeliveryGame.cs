@@ -41,6 +41,7 @@ public class DeliveryGame : MonoBehaviour
     const int NameMax = 10;          // 이름 최대 글자 수
 
     const string BestKey = "BestScoreV2"; // 점수 공식이 바뀌어서 예전 최고 기록과 따로 저장
+    const string GameVersion = "v2.0";  // 화면 아래 가운데에 표시되는 버전 (빌드할 때마다 올리기)
     const int MaxOrders = 2;         // 동시에 뜨는 배송지 최대 개수
     const float MapHalfW = 12f;      // 맵 절반 너비. 화면 약 3장 폭 (넓히거나 좁히려면 이 값만 바꾸면 됨)
 
@@ -81,6 +82,7 @@ public class DeliveryGame : MonoBehaviour
     Text startBestText, rankText;
     InputField nameInput;
     CanvasScaler uiScaler;
+    Text verText;
     AudioSource sfx;
     AudioClip sDeliver, sComboUp, sHit, sFail, sEnd;
     string playerName = "익명";
@@ -139,6 +141,7 @@ public class DeliveryGame : MonoBehaviour
 
         BuildWorld();
         BuildUI();
+        verText.transform.SetAsLastSibling(); // 시작, 결과 화면보다 위에 그려지게
         ShowStart();
     }
 
@@ -758,6 +761,10 @@ public class DeliveryGame : MonoBehaviour
         var root = cgo.transform;
 
         // 상단 정보 영역
+        // 버전 표시: 스틱과 배송 버튼 사이, 화면 아래 가운데 (시작, 플레이, 결과 화면 모두에서 보임)
+        verText = MakeText(root, GameVersion, 18, TextAnchor.LowerCenter, new Vector2(0.5f, 0), new Vector2(0.5f, 0), new Vector2(0, 12));
+        verText.color = new Color(1, 1, 1, 0.7f);
+
         var top = MakeImage("TopBar", root, new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), Vector2.zero, new Vector2(0, 80), new Color(0, 0, 0, 0.45f));
         top.raycastTarget = false;
         scoreText = MakeText(top.transform, "점수 0", 24, TextAnchor.MiddleLeft, new Vector2(0, 0), new Vector2(0.4f, 1), new Vector2(16, 0));
@@ -851,6 +858,8 @@ public class DeliveryGame : MonoBehaviour
         {
             input.interactable = false;
             input.transition = Selectable.Transition.None;
+            bg.color = Color.white;  // 비활성처럼 회색으로 보이지 않게
+            txt.color = Color.black;
             var trigger = bg.gameObject.AddComponent<EventTrigger>();
             var entry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
             entry.callback.AddListener(_ => OpenNamePrompt(nameInput != null ? nameInput.text : "", NameMax));
