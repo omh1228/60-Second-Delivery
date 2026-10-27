@@ -761,9 +761,9 @@ public class DeliveryGame : MonoBehaviour
         var root = cgo.transform;
 
         // 상단 정보 영역
-        // 버전 표시: 스틱과 배송 버튼 사이, 화면 아래 가운데 (시작, 플레이, 결과 화면 모두에서 보임)
-        verText = MakeText(root, GameVersion, 18, TextAnchor.LowerCenter, new Vector2(0.5f, 0), new Vector2(0.5f, 0), new Vector2(0, 12));
-        verText.color = new Color(1, 1, 1, 0.7f);
+        // 버전 표시: 스틱과 배송 버튼 사이 가운데 높이 (폰 브라우저 아래 막대에 가려지지 않게) (시작, 플레이, 결과 화면 모두에서 보임)
+        verText = MakeText(root, GameVersion, 22, TextAnchor.MiddleCenter, new Vector2(0.5f, 0), new Vector2(0.5f, 0), new Vector2(0, 110));
+        verText.color = new Color(1, 1, 1, 0.85f);
 
         var top = MakeImage("TopBar", root, new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), Vector2.zero, new Vector2(0, 80), new Color(0, 0, 0, 0.45f));
         top.raycastTarget = false;
