@@ -35,7 +35,7 @@ public class DeliveryGame : MonoBehaviour
 
     // ===== 랭킹 (Firebase Realtime Database) =====
     // Firebase 콘솔에서 만든 데이터베이스 주소로 바꾸세요. 끝에 / 는 붙이지 않습니다.
-    const string FirebaseUrl = "https://second-delivery-13526-default-rtdb.asia-southeast1.firebasedatabase.app/";
+    const string FirebaseUrl = "https://second-delivery-13526-default-rtdb.asia-southeast1.firebasedatabase.app";
     const int RankShow = 5;          // 결과 화면에 보여 줄 순위 수
     const float RankRefresh = 5f;    // 결과 화면에서 랭킹을 다시 불러오는 간격(초)
     const int NameMax = 10;          // 이름 최대 글자 수
@@ -58,6 +58,10 @@ public class DeliveryGame : MonoBehaviour
     readonly List<Box> houses = new List<Box>();
     readonly List<Car> cars = new List<Car>();
     readonly float[] lanes = { 2.7f, 0.15f, -0.95f };
+    readonly float[] laneDir = { 1f, -1f, 1f };   // 차선마다 달리는 방향 (오른쪽 +1, 왼쪽 -1)
+    const int MotoLane = 1;                       // 오토바이 전용 차선 번호 (0 위, 1 가운데, 2 아래)
+    const float CarGap = 0.4f;                    // 같은 차선에서 앞차와 유지하는 최소 간격
+    const float HitScale = 0.9f;                  // 충돌 판정 크기 (1이면 보이는 크기 그대로, 작을수록 관대함)
     readonly List<Order> orders = new List<Order>();
     readonly SpriteRenderer[] barBgs = new SpriteRenderer[MaxOrders];
     readonly SpriteRenderer[] barFills = new SpriteRenderer[MaxOrders];
@@ -77,6 +81,8 @@ public class DeliveryGame : MonoBehaviour
     Text startBestText, rankText;
     InputField nameInput;
     CanvasScaler uiScaler;
+    AudioSource sfx;
+    AudioClip sDeliver, sComboUp, sHit, sFail, sEnd;
     string playerName = "익명";
     VirtualStick stick;
 
@@ -92,12 +98,14 @@ public class DeliveryGame : MonoBehaviour
 
     void Start()
     {
+        SetupSounds();
         cam = Camera.main;
         if (cam == null)
         {
             var cgo = new GameObject("Main Camera");
             cgo.tag = "MainCamera";
             cam = cgo.AddComponent<Camera>();
+            cgo.AddComponent<AudioListener>();
         }
         cam.orthographic = true;
         cam.orthographicSize = 6f;
@@ -194,14 +202,55 @@ public class DeliveryGame : MonoBehaviour
             if (type == 0) { size = new Vector2(1.0f, 0.6f); c = Hex("#FF8A3D"); speed = Random.Range(1.6f, 2.3f); }       // 일반 자동차
             else if (type == 1) { size = new Vector2(0.6f, 0.35f); c = Hex("#222831"); speed = Random.Range(3.2f, 4.0f); } // 오토바이
             else { size = new Vector2(1.8f, 0.8f); c = Hex("#9C6ADE"); speed = Random.Range(1.1f, 1.4f); }                 // 트럭
-            float y = lanes[(cars.Count + i) % lanes.Length];
-            float dir = Random.value < 0.5f ? -1f : 1f;
-            var b = MakeBox("Car", new Vector2(Random.Range(-MapHalfW, MapHalfW), y), size, c, 3);
+            int li = LaneFor(type, cars.Count); // cars.Count는 차를 만들 때마다 1씩 늘어나므로 차선이 번갈아 정해진다
+            float y = lanes[li];
+            float dir = laneDir[li];
+            // 같은 차선의 다른 차와 겹치지 않는 자리를 찾는다 (최대 20번 시도)
+            float x = Random.Range(-MapHalfW, MapHalfW);
+            for (int tries = 0; tries < 20 && !LaneFree(y, x, size.x); tries++)
+                x = Random.Range(-MapHalfW, MapHalfW);
+            var b = MakeBox("Car", new Vector2(x, y), size, c, 3);
             cars.Add(new Car { t = b.t, sr = b.sr, size = size, speed = speed * dir });
         }
     }
 
     // 남은 시간이 줄어들수록 장애물이 하나씩 더 등장
+    // 오토바이는 전용 차선, 일반 차와 트럭은 나머지 차선을 번갈아 쓴다
+    int LaneFor(int type, int n)
+    {
+        if (type == 1) return MotoLane;
+        var others = new List<int>();
+        for (int k = 0; k < lanes.Length; k++) if (k != MotoLane) others.Add(k);
+        return others[n % others.Count];
+    }
+
+    bool LaneFree(float y, float x, float width)
+    {
+        foreach (var o in cars)
+        {
+            if (Mathf.Abs(o.t.position.y - y) > 0.01f) continue;
+            if (Mathf.Abs(o.t.position.x - x) < (width + o.size.x) / 2 + CarGap * 2) return false;
+        }
+        return true;
+    }
+
+    // 같은 차선에서 바로 앞에 있는 차 (없으면 null). 맵 끝에서 반대편으로 넘어가는 것도 고려
+    Car CarAhead(Car c, float edge, out float gap)
+    {
+        Car best = null;
+        gap = float.MaxValue;
+        float dir = Mathf.Sign(c.speed);
+        foreach (var o in cars)
+        {
+            if (o == c || Mathf.Abs(o.t.position.y - c.t.position.y) > 0.01f) continue;
+            float d = (o.t.position.x - c.t.position.x) * dir;
+            if (d < 0) d += edge * 2;
+            float g = d - (c.size.x + o.size.x) / 2;
+            if (g < gap) { gap = g; best = o; }
+        }
+        return best;
+    }
+
     // 맵이 넓어진 만큼 차도 늘려서 화면당 차 밀도를 예전과 비슷하게 유지
     int CarDensity() { return Mathf.Max(1, Mathf.RoundToInt(MapHalfW / 4f)); }
 
@@ -268,6 +317,56 @@ public class DeliveryGame : MonoBehaviour
         playing = true;
     }
 
+    // ================= 효과음 =================
+    // 소리 파일 없이 사인파로 짧은 소리를 만든다
+    void SetupSounds()
+    {
+        sfx = gameObject.AddComponent<AudioSource>();
+        sfx.playOnAwake = false;
+        sDeliver = Tone("deliver", new[] { 988f, 1319f }, 0.07f, 0.35f);             // 띵딩
+        sComboUp = Tone("comboUp", new[] { 784f, 988f, 1175f, 1568f }, 0.07f, 0.35f); // 콤보 단계 상승
+        sFail = Tone("fail", new[] { 440f, 330f }, 0.12f, 0.3f);                       // 시간 초과
+        sEnd = Tone("end", new[] { 523f, 659f, 784f, 1047f }, 0.12f, 0.3f);            // 게임 종료
+        sHit = Thud("hit", 0.25f, 0.6f);                                               // 쿵
+    }
+
+    AudioClip Tone(string name, float[] notes, float noteLen, float vol)
+    {
+        const int rate = 44100;
+        int per = (int)(rate * noteLen);
+        var data = new float[per * notes.Length];
+        for (int n = 0; n < notes.Length; n++)
+            for (int i = 0; i < per; i++)
+            {
+                float t = (float)i / rate;
+                float env = Mathf.Min(1f, i / (rate * 0.005f)) * (1f - (float)i / per); // 짧게 올라갔다가 줄어듦
+                data[n * per + i] = Mathf.Sin(2 * Mathf.PI * notes[n] * t) * env * vol;
+            }
+        var clip = AudioClip.Create(name, data.Length, 1, rate, false);
+        clip.SetData(data, 0);
+        return clip;
+    }
+
+    AudioClip Thud(string name, float len, float vol)
+    {
+        const int rate = 44100;
+        int count = (int)(rate * len);
+        var data = new float[count];
+        float phase = 0f;
+        for (int i = 0; i < count; i++)
+        {
+            float k = (float)i / count;
+            phase += 2 * Mathf.PI * Mathf.Lerp(160f, 50f, k) / rate;                 // 낮아지는 음
+            float noise = (Random.value * 2f - 1f) * (1f - k) * 0.4f;                // 부딪히는 잡음
+            data[i] = (Mathf.Sin(phase) + noise) * (1f - k) * (1f - k) * vol;
+        }
+        var clip = AudioClip.Create(name, count, 1, rate, false);
+        clip.SetData(data, 0);
+        return clip;
+    }
+
+    void Play(AudioClip c) { if (sfx != null && c != null) sfx.PlayOneShot(c); }
+
     bool HasOrder(int house)
     {
         foreach (var o in orders) if (o.house == house) return true;
@@ -332,6 +431,7 @@ public class DeliveryGame : MonoBehaviour
         maxCombo = Mathf.Max(maxCombo, combo);
         success++;
         score += Mathf.RoundToInt(100 * ComboMultiplier());
+        Play(combo == 5 || combo == 10 ? sComboUp : sDeliver);
         lastHouse = orders[i].house;
         orders.RemoveAt(i);
         if (orders.Count == 0) AddOrder();
@@ -374,8 +474,14 @@ public class DeliveryGame : MonoBehaviour
         float edge = MapHalfW + 1.5f;
         foreach (var c in cars)
         {
+            // 앞차에 가까우면 앞차보다 빨리 가지 않는다 (추월하거나 겹치지 않게)
+            float speed = c.speed;
+            float gap;
+            var ahead = CarAhead(c, edge, out gap);
+            if (ahead != null && gap < CarGap)
+                speed = Mathf.Sign(c.speed) * Mathf.Min(Mathf.Abs(c.speed), Mathf.Abs(ahead.speed)) * Mathf.Clamp01(gap / CarGap);
             var p = c.t.position;
-            p.x += c.speed * dt;
+            p.x += speed * dt;
             if (p.x > edge) p.x = -edge;
             if (p.x < -edge) p.x = edge;
             c.t.position = p;
@@ -401,6 +507,7 @@ public class DeliveryGame : MonoBehaviour
                 if (Overlap(player, c))
                 {
                     stunTimer = StunTime;          // 1.5초 기절
+                    Play(sHit);
                     FailOrder(MostUrgentOrder());  // 가장 급한 택배 1개를 잃음
                     break;
                 }
@@ -414,7 +521,7 @@ public class DeliveryGame : MonoBehaviour
         for (int i = orders.Count - 1; i >= 0; i--)
         {
             orders[i].timer -= dt;
-            if (orders[i].timer <= 0) FailOrder(i);
+            if (orders[i].timer <= 0) { Play(sFail); FailOrder(i); }
         }
 
         // 진행 중인 배송의 시간이 절반 남으면 다음 배송지 등장 (최대 MaxOrders곳)
@@ -472,7 +579,7 @@ public class DeliveryGame : MonoBehaviour
     bool Overlap(Box a, Box b)
     {
         Vector2 d = a.t.position - b.t.position;
-        return Mathf.Abs(d.x) < (a.size.x + b.size.x) * 0.45f && Mathf.Abs(d.y) < (a.size.y + b.size.y) * 0.45f;
+        return Mathf.Abs(d.x) < (a.size.x + b.size.x) * 0.5f * HitScale && Mathf.Abs(d.y) < (a.size.y + b.size.y) * 0.5f * HitScale;
     }
 
     void UpdateVisuals()
@@ -532,6 +639,7 @@ public class DeliveryGame : MonoBehaviour
             "최고 기록  " + best + "\n" +
             nextStar;
         resultPanel.SetActive(true);
+        Play(sEnd);
 
         StopAllCoroutines();
         StartCoroutine(SubmitAndShowRanking(playerName, score, score > 0));
@@ -561,7 +669,8 @@ public class DeliveryGame : MonoBehaviour
             }
         }
 
-        string url = FirebaseUrl + "/scores.json?orderBy=%22score%22&limitToLast=" + RankShow;
+        // 같은 이름이 여러 줄 차지하지 않도록 넉넉히 받아 와서 이름별 최고 기록만 남긴다
+        string url = FirebaseUrl + "/scores.json?orderBy=%22score%22&limitToLast=" + (RankShow * 10);
         while (resultPanel.activeSelf && !playing)
         {
             using (var req = UnityWebRequest.Get(url))
@@ -594,7 +703,16 @@ public class DeliveryGame : MonoBehaviour
             list.Add(new KeyValuePair<string, int>(n, int.Parse(sc.Groups[1].Value)));
         }
         list.Sort((a, b) => b.Value.CompareTo(a.Value));
-        return list;
+        // 이름별 최고 기록만 남기고 상위 RankShow개
+        var seen = new HashSet<string>();
+        var best = new List<KeyValuePair<string, int>>();
+        foreach (var e in list)
+        {
+            if (!seen.Add(e.Key)) continue;
+            best.Add(e);
+            if (best.Count >= RankShow) break;
+        }
+        return best;
     }
 
     void ShowRanking(List<KeyValuePair<string, int>> list, string me, int myScore)
