@@ -41,7 +41,7 @@ public class DeliveryGame : MonoBehaviour
     const int NameMax = 10;          // 이름 최대 글자 수
 
     const string BestKey = "BestScoreV2"; // 점수 공식이 바뀌어서 예전 최고 기록과 따로 저장
-    const string GameVersion = "v2.0";  // 화면 아래 가운데에 표시되는 버전 (빌드할 때마다 올리기)
+    const string GameVersion = "v2.1";  // 화면 아래 가운데에 표시되는 버전 (빌드할 때마다 올리기)
     const int MaxOrders = 2;         // 동시에 뜨는 배송지 최대 개수
     const float MapHalfW = 12f;      // 맵 절반 너비. 화면 약 3장 폭 (넓히거나 좁히려면 이 값만 바꾸면 됨)
 
@@ -51,6 +51,11 @@ public class DeliveryGame : MonoBehaviour
 
     Camera cam;
     Sprite square, triangle;
+    // 그림 (Assets/Resources/Art 폴더의 PNG). 파일이 없으면 예전처럼 사각형으로 그린다
+    Sprite[] artHouse;
+    Sprite artCar, artMoto, artTruck, artCourier;
+    readonly List<SpriteRenderer> houseGlows = new List<SpriteRenderer>();
+    bool HasHouseArt { get { return artHouse != null && artHouse.Length > 0; } }
     Material spriteMat;
     Font font;
     float viewHalf;                  // 지금 카메라에 보이는 절반 너비
@@ -58,9 +63,12 @@ public class DeliveryGame : MonoBehaviour
     Box player;
     readonly List<Box> houses = new List<Box>();
     readonly List<Car> cars = new List<Car>();
-    readonly float[] lanes = { 2.7f, 0.15f, -0.95f };
-    readonly float[] laneDir = { 1f, -1f, 1f };   // 차선마다 달리는 방향 (오른쪽 +1, 왼쪽 -1)
-    const int MotoLane = 1;                       // 오토바이 전용 차선 번호 (0 위, 1 가운데, 2 아래)
+    // 차선 4개: 집 두 줄 사이에 2개, 아래 집 줄과 인도 사이에 2개
+    readonly float[] lanes = { 3.3f, 2.2f, -0.2f, -1.3f };
+    readonly float[] laneDir = { 1f, -1f, 1f, -1f };   // 차선마다 달리는 방향 (오른쪽 +1, 왼쪽 -1)
+    readonly float[] houseRows = { 4.35f, 1.0f };      // 집 두 줄의 높이
+    const float SidewalkY = -2.4f;                      // 인도(출발 위치) 높이
+    const int MotoLane = 1;                       // 오토바이 전용 차선 번호 (0부터 위에서 아래로. 1 = 집 두 줄 사이 아래쪽 차선)
     const float CarGap = 0.4f;                    // 같은 차선에서 앞차와 유지하는 최소 간격
     const float HitScale = 0.9f;                  // 충돌 판정 크기 (1이면 보이는 크기 그대로, 작을수록 관대함)
     readonly List<Order> orders = new List<Order>();
@@ -139,6 +147,7 @@ public class DeliveryGame : MonoBehaviour
         if (font == null) font = Font.CreateDynamicFontFromOSFont(new[] { "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Arial" }, 32);
         if (spriteMat == null) EnsureGlobalLight();
 
+        LoadArt();
         BuildWorld();
         BuildUI();
         verText.transform.SetAsLastSibling(); // 시작, 결과 화면보다 위에 그려지게
@@ -173,17 +182,64 @@ public class DeliveryGame : MonoBehaviour
         return new Box { t = go.transform, sr = sr, size = size };
     }
 
+    // ================= 그림 =================
+    Sprite Art(string name)
+    {
+        var tex = Resources.Load<Texture2D>("Art/" + name);
+        if (tex == null) return null;
+        tex.filterMode = FilterMode.Bilinear;
+        tex.wrapMode = TextureWrapMode.Clamp;
+        return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f);
+    }
+
+    void LoadArt()
+    {
+        var hs = new List<Sprite>();
+        foreach (var n in new[] { "house_red", "house_teal", "house_navy" }) { var sp = Art(n); if (sp != null) hs.Add(sp); }
+        artHouse = hs.ToArray();
+        artCar = Art("car");
+        artMoto = Art("moto");
+        artTruck = Art("truck");
+        artCourier = Art("courier");
+    }
+
+    // 사각형 대신 그림을 입힌다. 그림이 원래 칸 크기에 꼭 맞게 늘이고, 색은 흰색(원래 그림 색 그대로)
+    void ApplyArt(Box b, Sprite sp)
+    {
+        if (sp == null) return;
+        b.sr.sprite = sp;
+        b.sr.color = Color.white;
+        var sz = sp.bounds.size;
+        b.t.localScale = new Vector3(b.size.x / sz.x, b.size.y / sz.y, 1);
+    }
+
+    Color PlayerTint { get { return artCourier != null ? Color.white : Blue; } }
+
     void BuildWorld()
     {
         foreach (float y in lanes) MakeBox("Road", new Vector2(0, y), new Vector2(MapHalfW * 2 + 4, 1f), Road, 0);
-        MakeBox("Sidewalk", new Vector2(0, -2.1f), new Vector2(MapHalfW * 2 + 4, 1.2f), Hex("#C9CCD1"), 0);
+        MakeBox("Sidewalk", new Vector2(0, SidewalkY), new Vector2(MapHalfW * 2 + 4, 1.2f), Hex("#C9CCD1"), 0);
 
         // 맵 전체 폭에 2.6 간격으로 집을 배치 (MapHalfW = 12이면 한 줄에 9채)
-        foreach (float y in new[] { 4.0f, 1.42f })
+        foreach (float y in houseRows)
             for (float x = -MapHalfW + 1.4f; x <= MapHalfW - 1.4f + 0.01f; x += 2.6f)
-                houses.Add(MakeBox("House", new Vector2(x, y), new Vector2(1.3f, 1.0f), HouseCol, 1));
+            {
+                // 배송지 표시용 테두리 (집 뒤에 깔리고, 배송지일 때만 켜짐)
+                var glow = MakeBox("HouseGlow", new Vector2(x, y), new Vector2(1.3f + 0.24f, 1.0f + 0.24f), Yellow, 1).sr;
+                glow.enabled = false;
+                houseGlows.Add(glow);
+                var h = MakeBox("House", new Vector2(x, y), new Vector2(1.3f, 1.0f), HouseCol, 2);
+                if (HasHouseArt) ApplyArt(h, artHouse[Random.Range(0, artHouse.Length)]);
+                houses.Add(h);
+            }
 
-        player = MakeBox("Player", new Vector2(0, -2.1f), new Vector2(0.6f, 0.6f), Blue, 5);
+        player = MakeBox("Player", new Vector2(0, SidewalkY), new Vector2(0.6f, 0.6f), Blue, 5);
+        ApplyArt(player, artCourier);
+
+        // 차선 가운데 점선
+        foreach (float y in lanes)
+            for (float x = -MapHalfW - 1.5f; x <= MapHalfW + 1.5f; x += 0.7f)
+                MakeBox("LaneDash", new Vector2(x, y), new Vector2(0.32f, 0.05f), new Color(0.88f, 0.88f, 0.8f, 0.8f), 1);
         // 배송지마다 제한시간 막대, 마커, 화면 밖 화살표를 하나씩 준비
         for (int k = 0; k < MaxOrders; k++)
         {
@@ -213,6 +269,8 @@ public class DeliveryGame : MonoBehaviour
             for (int tries = 0; tries < 20 && !LaneFree(y, x, size.x); tries++)
                 x = Random.Range(-MapHalfW, MapHalfW);
             var b = MakeBox("Car", new Vector2(x, y), size, c, 3);
+            ApplyArt(b, type == 0 ? artCar : type == 1 ? artMoto : artTruck);
+            b.sr.flipX = dir < 0; // 그림은 오른쪽을 보고 있으므로, 왼쪽으로 가는 차는 뒤집는다
             cars.Add(new Car { t = b.t, sr = b.sr, size = size, speed = speed * dir });
         }
     }
@@ -312,7 +370,8 @@ public class DeliveryGame : MonoBehaviour
         stage = 0;
         timeLeft = GameTime;
         stunTimer = 0;
-        player.t.position = new Vector2(0, -2.1f);
+        player.t.position = new Vector2(0, SidewalkY);
+        player.t.rotation = Quaternion.identity;
         orders.Clear();
         lastHouse = -1;
         AddOrder();
@@ -494,16 +553,25 @@ public class DeliveryGame : MonoBehaviour
         if (stunTimer > 0)
         {
             stunTimer -= dt;
-            player.sr.color = Mathf.Repeat(Time.time * 10f, 1f) < 0.5f ? Red : Blue;
+            player.sr.color = Mathf.Repeat(Time.time * 10f, 1f) < 0.5f ? Red : PlayerTint;
         }
         else
         {
-            player.sr.color = Blue;
+            player.sr.color = PlayerTint;
             Vector2 p = player.t.position;
-            p += ReadMove() * PlayerSpeed * dt;
+            Vector2 mv = ReadMove();
+            p += mv * PlayerSpeed * dt;
             p.x = Mathf.Clamp(p.x, -MapHalfW + 0.3f, MapHalfW - 0.3f);
-            p.y = Mathf.Clamp(p.y, -2.5f, 4.6f);
+            p.y = Mathf.Clamp(p.y, SidewalkY - 0.5f, houseRows[0] + 0.6f);
             player.t.position = p;
+
+            // 움직이는 방향을 바라보게 회전 (그림은 위쪽이 앞)
+            if (mv.sqrMagnitude > 0.01f)
+            {
+                float target = Mathf.Atan2(mv.y, mv.x) * Mathf.Rad2Deg - 90f;
+                float cur = player.t.eulerAngles.z;
+                player.t.rotation = Quaternion.Euler(0, 0, Mathf.MoveTowardsAngle(cur, target, 900f * dt));
+            }
 
             foreach (var c in cars)
             {
@@ -546,6 +614,8 @@ public class DeliveryGame : MonoBehaviour
     {
         // 가로 화면(PC)에서는 높이 기준으로 UI 크기를 맞춰 결과 카드가 잘리지 않게 한다
         if (uiScaler != null) uiScaler.matchWidthOrHeight = Screen.width > Screen.height ? 1f : 0.5f;
+        // 버전 글자는 결과 카드와 겹치지 않게, 결과 화면에서는 숨긴다
+        if (verText != null && resultPanel != null) verText.enabled = !resultPanel.activeSelf;
 
         if (cam == null || player == null) return;
         viewHalf = cam.orthographicSize * cam.aspect;
@@ -588,10 +658,25 @@ public class DeliveryGame : MonoBehaviour
     void UpdateVisuals()
     {
         int ready = DeliverableOrder();
-        Color blink = Color.Lerp(HouseCol, Yellow, Mathf.PingPong(Time.time * 3f, 1f));
-        foreach (var h in houses) h.sr.color = HouseCol;
-        for (int k = 0; k < orders.Count; k++)
-            houses[orders[k].house].sr.color = (k == ready) ? Orange : blink;
+        float pulse = Mathf.PingPong(Time.time * 3f, 1f);
+        if (HasHouseArt)
+        {
+            // 그림이 있을 때: 집 색은 그대로, 배송지 집 뒤의 노란 테두리가 깜빡임 (배송 가능하면 주황)
+            foreach (var g in houseGlows) g.enabled = false;
+            for (int k = 0; k < orders.Count; k++)
+            {
+                var g = houseGlows[orders[k].house];
+                g.enabled = true;
+                g.color = (k == ready) ? Orange : new Color(Yellow.r, Yellow.g, Yellow.b, Mathf.Lerp(0.35f, 1f, pulse));
+            }
+        }
+        else
+        {
+            Color blink = Color.Lerp(HouseCol, Yellow, pulse);
+            foreach (var h in houses) h.sr.color = HouseCol;
+            for (int k = 0; k < orders.Count; k++)
+                houses[orders[k].house].sr.color = (k == ready) ? Orange : blink;
+        }
 
         for (int k = 0; k < MaxOrders; k++)
         {
