@@ -33,15 +33,19 @@ public class DeliveryGame : MonoBehaviour
     static extern void OpenNamePrompt(string current, int maxLen);
 #endif
 
-    // ===== 랭킹 (Firebase Realtime Database) =====
-    // Firebase 콘솔에서 만든 데이터베이스 주소로 바꾸세요. 끝에 / 는 붙이지 않습니다.
-    const string FirebaseUrl = "https://second-delivery-13526-default-rtdb.asia-southeast1.firebasedatabase.app";
+    // ===== Firebase (10강: 게스트 로그인 + 점수 저장) =====
+    // 데이터베이스 주소 (끝에 / 없이)와 웹 API 키. API 키는 비밀번호가 아니라 프로젝트 꼬리표 (강의노트 2.6)
+    const string FirebaseUrl = "https://networkprog2026-e1a48-default-rtdb.asia-southeast1.firebasedatabase.app";
+    const string ApiKey = "AIzaSyBTLtYqTlL4sH4VgGyye-fhfbDL9yQsk1k";
+    // 로그인 결과. static이라 어디서든 DeliveryGame.Uid 로 읽을 수 있음
+    public static string Uid = "", IdToken = "", GuestName = "";
+    float tokenTime;                 // idToken을 받은 시각 (1시간 만료 대비)
     const int RankShow = 5;          // 결과 화면에 보여 줄 순위 수
     const float RankRefresh = 5f;    // 결과 화면에서 랭킹을 다시 불러오는 간격(초)
     const int NameMax = 10;          // 이름 최대 글자 수
 
     const string BestKey = "BestScoreV2"; // 점수 공식이 바뀌어서 예전 최고 기록과 따로 저장
-    const string GameVersion = "v2.1";  // 화면 아래 가운데에 표시되는 버전 (빌드할 때마다 올리기)
+    const string GameVersion = "v2.2";  // 화면 아래 가운데에 표시되는 버전 (빌드할 때마다 올리기)
     const int MaxOrders = 2;         // 동시에 뜨는 배송지 최대 개수
     const float MapHalfW = 12f;      // 맵 절반 너비. 화면 약 3장 폭 (넓히거나 좁히려면 이 값만 바꾸면 됨)
 
@@ -86,8 +90,8 @@ public class DeliveryGame : MonoBehaviour
     // UI
     Text scoreText, timeText, infoText, hintText, resultText, starText;
     Image deliverImg;
-    GameObject resultPanel, startPanel;
-    Text startBestText, rankText;
+    GameObject resultPanel, startPanel, loginPanel;
+    Text startBestText, rankText, loginStatus, userText;
     InputField nameInput;
     CanvasScaler uiScaler;
     Text verText;
@@ -151,7 +155,7 @@ public class DeliveryGame : MonoBehaviour
         BuildWorld();
         BuildUI();
         verText.transform.SetAsLastSibling(); // 시작, 결과 화면보다 위에 그려지게
-        ShowStart();
+        ShowLogin();                          // 항상 로그인 화면부터 (강의노트 실습 5의 Login 씬 역할)
     }
 
     // URP 2D에서 Unlit 셰이더가 빌드에 빠졌을 때 스프라이트가 어둡게 보이지 않도록 전역 2D 조명을 하나 만든다.
@@ -325,19 +329,82 @@ public class DeliveryGame : MonoBehaviour
 
     float LimitFor(int s) { return s <= 1 ? 7f : (s == 2 ? 5f : 4f); }
 
+    // ================= 로그인 (강의노트 실습 5) =================
+    [System.Serializable]
+    class AuthResponse { public string idToken, localId, refreshToken, id_token, user_id, refresh_token; }
+    [System.Serializable]
+    class ScoreData { public string name; public int score; }
+
+    void ShowLogin()
+    {
+        playing = false;
+        resultPanel.SetActive(false);
+        startPanel.SetActive(false);
+        loginStatus.text = "";
+        loginPanel.SetActive(true);
+    }
+
+    // 게스트 로그인 버튼
+    public void GuestLogin()
+    {
+        loginStatus.text = "로그인 중...";
+        StartCoroutine(SignIn(true));
+    }
+
+    // 처음이면 새 손님 가입, 저장된 refreshToken이 있으면 같은 손님의 새 토큰을 받는다
+    IEnumerator SignIn(bool goToMenu)
+    {
+        string saved = PlayerPrefs.GetString("refreshToken", "");
+        string signUp = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + ApiKey;
+        string refresh = "https://securetoken.googleapis.com/v1/token?key=" + ApiKey;
+        using (var req = saved == ""
+            ? UnityWebRequest.Post(signUp, "{\"returnSecureToken\":true}", "application/json")
+            : UnityWebRequest.Post(refresh, "grant_type=refresh_token&refresh_token=" + saved, "application/x-www-form-urlencoded"))
+        {
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                // 저장된 증명서가 무효면 지우고, 다시 누르면 새 손님으로 가입된다
+                PlayerPrefs.DeleteKey("refreshToken");
+                Debug.LogWarning("로그인 실패: " + req.error + " " + req.downloadHandler.text);
+                if (goToMenu) loginStatus.text = "로그인 실패. 다시 눌러 주세요\n(" + req.error + ")";
+                yield break;
+            }
+            var r = JsonUtility.FromJson<AuthResponse>(req.downloadHandler.text);
+            Uid = saved == "" ? r.localId : r.user_id;
+            IdToken = saved == "" ? r.idToken : r.id_token;
+            PlayerPrefs.SetString("refreshToken", saved == "" ? r.refreshToken : r.refresh_token);
+            PlayerPrefs.Save();
+            tokenTime = Time.realtimeSinceStartup;
+            GuestName = "손님 " + Uid.Substring(0, 6);
+        }
+        if (goToMenu) { loginPanel.SetActive(false); ShowStart(); }
+    }
+
+    // 로그아웃: 로그인 정보만 비우고 로그인 화면으로. refreshToken은 남아 있어 다시 누르면 같은 손님
+    public void Logout()
+    {
+        Uid = ""; IdToken = ""; GuestName = "";
+        ShowLogin();
+    }
+
     // ================= 진행 =================
     void ShowStart()
     {
         playing = false;
         resultPanel.SetActive(false);
+        userText.text = GuestName + " 로 로그인됨";
         startBestText.text = "최고 기록  " + PlayerPrefs.GetInt(BestKey, 0);
         nameInput.text = PlayerPrefs.GetString("PlayerName", "");
         startPanel.SetActive(true);
+        SetIme(true);   // 이름 칸에 한글 입력 가능
     }
 
     public void StartGame()
     {
+        SetIme(false);  // 플레이 중에는 한글 입력을 꺼서 WASD가 먹히게
         playerName = CleanName(nameInput.text);
+        if (playerName == "익명") playerName = GuestName; // 이름을 안 쓰면 손님 번호로 랭킹에 올라감
         PlayerPrefs.SetString("PlayerName", playerName);
         PlayerPrefs.Save();
         startPanel.SetActive(false);
@@ -376,6 +443,7 @@ public class DeliveryGame : MonoBehaviour
         lastHouse = -1;
         AddOrder();
         resultPanel.SetActive(false);
+        SetIme(false);
         playing = true;
     }
 
@@ -522,7 +590,7 @@ public class DeliveryGame : MonoBehaviour
         if (!playing)
         {
             // 이름 입력 중에 R을 쳐도 게임이 시작되지 않게
-            if (RestartKey() && (nameInput == null || !nameInput.isFocused)) StartGame();
+            if (RestartKey() && !loginPanel.activeSelf && (nameInput == null || !nameInput.isFocused)) StartGame();
             return;
         }
 
@@ -730,7 +798,7 @@ public class DeliveryGame : MonoBehaviour
         Play(sEnd);
 
         StopAllCoroutines();
-        StartCoroutine(SubmitAndShowRanking(playerName, score, score > 0));
+        StartCoroutine(SubmitAndShowRanking(playerName, score, score > 0 && Uid != ""));
     }
 
     // ================= 랭킹 =================
@@ -744,16 +812,30 @@ public class DeliveryGame : MonoBehaviour
 
         if (submit)
         {
-            // time은 Firebase 서버 시간으로 기록된다
-            string body = "{\"name\":\"" + name + "\",\"score\":" + myScore + ",\"time\":{\".sv\":\"timestamp\"}}";
-            using (var req = new UnityWebRequest(FirebaseUrl + "/scores.json", "POST"))
+            // idToken은 1시간 유효. 50분이 넘었으면 같은 손님의 새 토큰부터 받는다 (강의노트 2.14)
+            if (Time.realtimeSinceStartup - tokenTime > 3000f) yield return SignIn(false);
+
+            // 내 칸 = scores/{uid}. 먼저 서버의 내 기록을 읽고, 더 높을 때만 덮어쓴다 (실습 7)
+            string myUrl = FirebaseUrl + "/scores/" + Uid + ".json?auth=" + IdToken;
+            int serverBest = 0;
+            using (var get = UnityWebRequest.Get(myUrl))
             {
-                req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
-                req.downloadHandler = new DownloadHandlerBuffer();
-                req.SetRequestHeader("Content-Type", "application/json");
-                yield return req.SendWebRequest();
-                if (req.result != UnityWebRequest.Result.Success)
-                    Debug.LogWarning("점수 저장 실패: " + req.error + " " + req.downloadHandler.text);
+                yield return get.SendWebRequest();
+                string old = get.downloadHandler.text;
+                if (get.result == UnityWebRequest.Result.Success && old.StartsWith("{"))
+                    serverBest = JsonUtility.FromJson<ScoreData>(old).score;
+            }
+            if (myScore > serverBest)
+            {
+                // time은 Firebase 서버 시간으로 기록된다
+                string body = "{\"name\":\"" + name + "\",\"score\":" + myScore + ",\"time\":{\".sv\":\"timestamp\"}}";
+                using (var req = UnityWebRequest.Put(myUrl, Encoding.UTF8.GetBytes(body)))
+                {
+                    req.SetRequestHeader("Content-Type", "application/json");
+                    yield return req.SendWebRequest();
+                    if (req.result == UnityWebRequest.Result.Success) Debug.Log("saved " + myScore);
+                    else Debug.LogWarning("save failed " + req.error + " " + req.downloadHandler.text);
+                }
             }
         }
 
@@ -907,6 +989,23 @@ public class DeliveryGame : MonoBehaviour
         var startBtn = MakeImage("StartButton", sdim.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0, -190), new Vector2(240, 80), Yellow);
         startBtn.gameObject.AddComponent<Button>().onClick.AddListener(StartGame);
         MakeText(startBtn.transform, "START", 34, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, Vector2.zero).color = Color.black;
+        // 로그인한 손님 번호와 로그아웃 버튼 (강의노트 실습 5의 Menu 씬 역할)
+        userText = MakeText(sdim.transform, "", 22, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 300));
+        userText.color = new Color(1, 1, 1, 0.9f);
+        var outBtn = MakeImage("LogoutButton", sdim.transform, new Vector2(1, 1), new Vector2(1, 1), new Vector2(1, 1), new Vector2(-12, -12), new Vector2(120, 44), new Color(1, 1, 1, 0.25f));
+        outBtn.gameObject.AddComponent<Button>().onClick.AddListener(Logout);
+        MakeText(outBtn.transform, "로그아웃", 20, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, Vector2.zero);
+
+        // 로그인 화면 (강의노트 실습 5의 Login 씬 역할). 가장 위에 그려지도록 마지막에 만든다
+        var ldim = MakeImage("LoginPanel", root, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, new Color(0, 0, 0, 0.85f));
+        loginPanel = ldim.gameObject;
+        var lt = MakeText(ldim.transform, "택배기사", 56, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 200));
+        lt.color = Yellow;
+        MakeText(ldim.transform, "60초 배송", 40, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, 135));
+        var guestBtn = MakeImage("GuestLoginButton", ldim.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0, -20), new Vector2(260, 80), Yellow);
+        guestBtn.gameObject.AddComponent<Button>().onClick.AddListener(GuestLogin);
+        MakeText(guestBtn.transform, "게스트 로그인", 32, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, Vector2.zero).color = Color.black;
+        loginStatus = MakeText(ldim.transform, "", 22, TextAnchor.MiddleCenter, new Vector2(0, 0.5f), new Vector2(1, 0.5f), new Vector2(0, -110));
     }
 
     Image MakeImage(string name, Transform parent, Vector2 aMin, Vector2 aMax, Vector2 pivot, Vector2 pos, Vector2 size, Color c)
@@ -972,6 +1071,19 @@ public class DeliveryGame : MonoBehaviour
         tx.horizontalOverflow = HorizontalWrapMode.Overflow;
         tx.verticalOverflow = VerticalWrapMode.Overflow;
         return tx;
+    }
+
+    // 한글 입력(IME)이 켜져 있으면 W/A/S/D가 글자 조합으로 처리되어 게임이 키를 못 받는다.
+    // 이름을 입력할 때만 켜고, 플레이 중에는 끈다.
+    void SetIme(bool on)
+    {
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null) Keyboard.current.SetIMEEnabled(on);
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+        Input.imeCompositionMode = on ? IMECompositionMode.Auto : IMECompositionMode.Off;
+#endif
+        if (!on && EventSystem.current != null) EventSystem.current.SetSelectedGameObject(null); // 이름 칸 선택 해제
     }
 
     // ================= 입력 (Input System / 기존 Input 둘 다 지원) =================
